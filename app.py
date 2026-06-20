@@ -7,6 +7,7 @@ import glob
 import io
 import hashlib
 import json
+import base64
 from PIL import Image
 from pose_engine import PoseDetector, get_pose_angles, get_feedback, POSES_LIBRARY, get_all_poses
 

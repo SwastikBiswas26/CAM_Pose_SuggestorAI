@@ -4,6 +4,9 @@ import streamlit as st
 import os
 import time
 import glob
+import io
+import hashlib
+from PIL import Image
 from pose_engine import PoseDetector, get_pose_angles, get_feedback, POSES_LIBRARY, get_all_poses
 
 # Set Streamlit Page Configuration
@@ -69,6 +72,8 @@ os.makedirs(os.path.join("assets", "poses"), exist_ok=True)
 # Initialize Session State
 if 'captured_image_info' not in st.session_state:
     st.session_state.captured_image_info = None
+if 'processed_state_key' not in st.session_state:
+    st.session_state.processed_state_key = None
 
 def generate_silhouette_preview(landmarks_template):
     """
@@ -102,124 +107,6 @@ def generate_silhouette_preview(landmarks_template):
         
     return canvas
 
-def run_camera_feed(pose_name, pose_data):
-    """
-    Launches the live OpenCV camera loop, overlaying guidelines and matching in real-time.
-    """
-    detector = PoseDetector()
-    cap = cv2.VideoCapture(0)
-    
-    if not cap.isOpened():
-        st.error("Could not open your webcam. Please check connection and permissions.")
-        return None
-
-    target_angles = pose_data["angles"]
-    landmarks_template = pose_data.get("landmarks", [])
-    
-    status_placeholder = st.empty()
-    status_placeholder.warning("🎥 Camera window is active! Position yourself in the frame. Press SPACEBAR to take a picture, or Q to exit.")
-    
-    captured_data = None
-    
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
-            
-        # 1. Horizontal Flip for intuitive mirror view
-        frame = cv2.flip(frame, 1)
-        h, w, c = frame.shape
-        
-        # 2. Draw Target silhouette overlay (mirrored x coordinate)
-        if landmarks_template:
-            mirrored_template = []
-            for lm in landmarks_template:
-                mirrored_template.append({
-                    "id": lm["id"],
-                    "x": 1.0 - lm["x"],  # Mirror the template x coordinate to match mirrored camera feed
-                    "y": lm["y"]
-                })
-            detector.draw_guide_silhouette(frame, mirrored_template, color=(150, 150, 150), thickness=2)
-            
-        # 3. Detect user's pose
-        detector.process_frame(frame)
-        
-        # 4. Analyze and Draw live skeleton based on matching score
-        lm_list = detector.find_landmarks(frame, draw=False)
-        
-        score = 0
-        suggestions = ["Position yourself fully in the camera view"]
-        status_dict = {}
-        skeleton_color = (0, 0, 255) # Red by default (needs adjustment)
-        
-        if lm_list:
-            user_angles = get_pose_angles(lm_list)
-            score, suggestions, status_dict = get_feedback(user_angles, target_angles)
-            
-            # Determine skeleton color based on score
-            if score >= 80:
-                skeleton_color = (0, 255, 0) # Green (Perfect)
-            elif score >= 50:
-                skeleton_color = (0, 255, 255) # Yellow (Close)
-            else:
-                skeleton_color = (0, 0, 255) # Red (Needs work)
-                
-            # Draw skeleton with match-dependent color
-            detector.find_landmarks(frame, draw=True, draw_connections=True, color=skeleton_color)
-            
-            # Draw Match score on screen
-            cv2.putText(frame, f"Match: {score}%", (10, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, skeleton_color, 2, cv2.LINE_AA)
-            
-            # Draw top feedback suggestion on screen
-            if suggestions:
-                cv2.putText(frame, suggestions[0], (10, h - 20), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-        else:
-            cv2.putText(frame, "No Pose Detected", (10, 40), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2, cv2.LINE_AA)
-            
-        # Display the live feed window
-        cv2.imshow(f"AI Pose Assistant - Target: {pose_name}", frame)
-        
-        # Keyboard controls
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q') or key == ord('Q') or key == 27: # Q or Esc
-            break
-        elif key == 32: # Spacebar to capture
-            # Save raw picture (without lines) and analyzed picture (with lines)
-            timestamp = int(time.time())
-            
-            # Re-read a clean un-analyzed frame for the raw capture
-            ret_raw, clean_frame = cap.read()
-            if ret_raw:
-                clean_frame = cv2.flip(clean_frame, 1)
-            else:
-                clean_frame = frame.copy() # fallback
-                
-            raw_path = f"assets/captures/raw_{timestamp}.png"
-            analysed_path = f"assets/captures/analysed_{timestamp}.png"
-            
-            cv2.imwrite(raw_path, clean_frame)
-            cv2.imwrite(analysed_path, frame)
-            
-            captured_data = {
-                "timestamp": timestamp,
-                "pose_name": pose_name,
-                "score": score,
-                "suggestions": suggestions,
-                "status_dict": status_dict,
-                "raw_image": raw_path,
-                "analysed_image": analysed_path
-            }
-            break
-            
-    cap.release()
-    cv2.destroyAllWindows()
-    status_placeholder.empty()
-    
-    return captured_data
-
 # Main Web App UI
 def main():
     st.markdown('<div class="main-header">PoseGenie AI 📸</div>', unsafe_allow_html=True)
@@ -246,7 +133,7 @@ def main():
     st.sidebar.info("💡 Tip: Stand far enough so your full body (head to ankles) is visible in the camera frame.")
     
     # Tab navigation
-    tab_guide, tab_gallery = st.tabs(["🎯 Pose Guide & Camera", "🖼️ My Photo Gallery"])
+    tab_guide, tab_gallery, tab_create = st.tabs(["🎯 Pose Guide & Camera", "🖼️ My Photo Gallery", "➕ Create Custom Pose"])
     
     with tab_guide:
         col1, col2 = st.columns([1, 1])
@@ -255,26 +142,93 @@ def main():
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.markdown("### How it works:")
             st.markdown("""
-                1. Click **'Start AI Camera'** below.
-                2. A live camera feed window will open.
-                3. Align your joints with the **gray target guide lines** shown on screen.
-                4. The camera overlay will show your score:
-                   - 🔴 **Red Skeleton**: Keep adjusting!
-                   - 🟡 **Yellow Skeleton**: Getting close!
-                   - 🟢 **Green Skeleton**: Perfect alignment!
-                5. Watch the feedback prompt at the bottom of the window.
-                6. Press **SPACEBAR** to take the photo when ready!
+                1. Select your target pose from the sidebar.
+                2. Choose your input method below (Webcam or Upload).
+                3. Strike the pose and capture/upload.
+                4. The AI will overlay the guide, detect your posture, and show suggestions!
             """)
             st.markdown('</div>', unsafe_allow_html=True)
             
-            # Start camera button
-            if st.button("🚀 Start AI Camera", use_container_width=True, type="primary"):
-                with st.spinner("Initializing webcam..."):
-                    captured_info = run_camera_feed(selected_pose_name, pose_data)
-                    if captured_info:
-                        st.session_state.captured_image_info = captured_info
-                        st.success("Photo clicked successfully! See results on the right.")
-                        
+            input_method = st.radio("Choose Input Method:", ["📷 Use Browser Camera", "📤 Upload Photo"], key="input_method")
+            
+            input_file = None
+            if input_method == "📷 Use Browser Camera":
+                input_file = st.camera_input("Strike your pose!")
+            else:
+                input_file = st.file_uploader("Upload an image containing the pose", type=["png", "jpg", "jpeg"])
+                
+            if input_file is not None:
+                file_bytes = input_file.getvalue()
+                file_hash = hashlib.md5(file_bytes).hexdigest()
+                current_state_key = (file_hash, selected_pose_name)
+                
+                # Run detection if file is new or target pose changed
+                if st.session_state.processed_state_key != current_state_key:
+                    with st.spinner("Analyzing pose..."):
+                        try:
+                            # 1. Load image and convert to BGR (OpenCV format)
+                            image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                            img_array = np.array(image)
+                            img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                            
+                            # 2. Detect landmarks
+                            detector = PoseDetector()
+                            detector.process_frame(img_bgr)
+                            lm_list = detector.find_landmarks(img_bgr, draw=False)
+                            
+                            # 3. Calculate score & feedback suggestions
+                            target_angles = pose_data["angles"]
+                            score = 0
+                            suggestions = []
+                            status_dict = {}
+                            
+                            if lm_list:
+                                user_angles = get_pose_angles(lm_list)
+                                score, suggestions, status_dict = get_feedback(user_angles, target_angles)
+                            else:
+                                suggestions = ["No pose detected. Make sure your full body (head to ankles) is visible in the frame."]
+                            
+                            # 4. Generate clean and analyzed image copies
+                            img_clean = img_bgr.copy()
+                            img_analysed = img_bgr.copy()
+                            
+                            # Draw Target guide outline template
+                            detector.draw_guide_silhouette(img_analysed, pose_data.get("landmarks", []), color=(150, 150, 150), thickness=2)
+                            
+                            if lm_list:
+                                # Determine skeleton color
+                                if score >= 80:
+                                    skeleton_color = (0, 255, 0)       # Green (Good)
+                                elif score >= 50:
+                                    skeleton_color = (0, 255, 255)     # Yellow (Close)
+                                else:
+                                    skeleton_color = (0, 0, 255)       # Red (Adjust)
+                                    
+                                detector.find_landmarks(img_analysed, draw=True, draw_connections=True, color=skeleton_color)
+                            
+                            # 5. Save files locally
+                            timestamp = int(time.time())
+                            raw_path = f"assets/captures/raw_{timestamp}.png"
+                            analysed_path = f"assets/captures/analysed_{timestamp}.png"
+                            
+                            cv2.imwrite(raw_path, img_clean)
+                            cv2.imwrite(analysed_path, img_analysed)
+                            
+                            # 6. Save results to Session State
+                            st.session_state.captured_image_info = {
+                                "timestamp": timestamp,
+                                "pose_name": selected_pose_name,
+                                "score": score,
+                                "suggestions": suggestions,
+                                "status_dict": status_dict,
+                                "raw_image": raw_path,
+                                "analysed_image": analysed_path
+                            }
+                            st.session_state.processed_state_key = current_state_key
+                            st.success("Pose analysis completed successfully!")
+                        except Exception as e:
+                            st.error(f"Error processing image: {e}")
+                            
         with col2:
             st.markdown("### Latest Capture & AI Analysis")
             
@@ -282,7 +236,7 @@ def main():
                 info = st.session_state.captured_image_info
                 
                 # Layout for raw/analyzed photos
-                pic_tab1, pic_tab2 = st.tabs(["✨ Final Photo (Clean)", "📊 AI skeleton Analysis"])
+                pic_tab1, pic_tab2 = st.tabs(["✨ Final Photo (Clean)", "📊 AI Skeleton Analysis"])
                 with pic_tab1:
                     st.image(info["raw_image"], use_container_width=True, caption=f"Captured Pose: {info['pose_name']}")
                 with pic_tab2:
@@ -337,7 +291,7 @@ def main():
                     except Exception:
                         st.error("Error loading analyzed photo for download.")
             else:
-                st.info("Click 'Start AI Camera' to take your first photo!")
+                st.info("Capture a photo or upload an image to start analysis!")
                 
     with tab_gallery:
         st.markdown("### Clicked Photos Gallery")
@@ -392,6 +346,7 @@ def main():
                                 if (st.session_state.captured_image_info and 
                                     str(st.session_state.captured_image_info["timestamp"]) == timestamp_str):
                                     st.session_state.captured_image_info = None
+                                    st.session_state.processed_state_key = None
                                 
                                 st.success("Pose deleted!")
                                 time.sleep(0.5)
@@ -403,6 +358,88 @@ def main():
                     if os.path.exists(analysed_path):
                         if st.button("View AI Skeleton Overlay", key=f"overlay_{timestamp_str}", use_container_width=True):
                             st.image(analysed_path, use_container_width=True, caption="Joint Tracking Overlay")
+
+    with tab_create:
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.markdown("### ➕ Record & Create a Custom Pose")
+        st.markdown("Strike a custom pose, specify a name and description, and save it to your local library.")
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        pose_name_input = st.text_input("Pose Name (e.g. 'Warrior Pose')", key="custom_pose_name")
+        pose_desc_input = st.text_area("Pose Description", key="custom_pose_desc")
+        
+        create_method = st.radio("Capture Method:", ["📷 Use Browser Camera", "📤 Upload Photo"], key="create_method")
+        
+        create_file = None
+        if create_method == "📷 Use Browser Camera":
+            create_file = st.camera_input("Strike your custom pose!", key="create_camera")
+        else:
+            create_file = st.file_uploader("Upload custom pose image", type=["png", "jpg", "jpeg"], key="create_uploader")
+            
+        if create_file is not None:
+            file_bytes = create_file.getvalue()
+            
+            with st.spinner("Analyzing custom pose..."):
+                try:
+                    # Load image
+                    image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+                    img_array = np.array(image)
+                    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+                    
+                    detector = PoseDetector()
+                    detector.process_frame(img_bgr)
+                    lm_list = detector.find_landmarks(img_bgr, draw=False)
+                    
+                    if not lm_list:
+                        st.error("No pose detected in the image! Please ensure your full body is visible in the frame.")
+                    else:
+                        # Draw detected skeleton for visual verification
+                        img_preview = img_bgr.copy()
+                        detector.find_landmarks(img_preview, draw=True, draw_connections=True, color=(0, 255, 204))
+                        
+                        st.image(img_preview, channels="BGR", use_container_width=True, caption="Detected Pose Skeleton")
+                        
+                        if not pose_name_input.strip():
+                            st.warning("Please enter a name for this custom pose before saving.")
+                        else:
+                            if st.button("💾 Save Custom Pose to Library", type="primary", use_container_width=True):
+                                # Extract angles and landmarks
+                                angles = get_pose_angles(lm_list)
+                                landmarks_data = []
+                                for item in lm_list:
+                                    landmarks_data.append({
+                                        "id": item[0],
+                                        "x": item[3], # norm_x
+                                        "y": item[4], # norm_y
+                                        "vis": item[6] # visibility
+                                    })
+                                    
+                                custom_poses = {}
+                                json_path = os.path.join("assets", "poses", "custom_poses.json")
+                                if os.path.exists(json_path):
+                                    try:
+                                        with open(json_path, 'r') as f:
+                                            custom_poses = json.load(f)
+                                    except Exception as e:
+                                        st.error(f"Error loading existing poses: {e}")
+                                        
+                                custom_poses[pose_name_input.strip()] = {
+                                    "description": pose_desc_input.strip() or f"Custom pose: {pose_name_input.strip()}",
+                                    "angles": angles,
+                                    "landmarks": landmarks_data,
+                                    "recorded_at": time.strftime("%Y-%m-%d %H:%M:%S")
+                                }
+                                
+                                try:
+                                    with open(json_path, 'w') as f:
+                                        json.dump(custom_poses, f, indent=4)
+                                    st.success(f"Pose '{pose_name_input}' has been successfully added to your Pose Library!")
+                                    time.sleep(1.0)
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Error saving pose: {e}")
+                except Exception as e:
+                    st.error(f"Error analyzing custom pose: {e}")
 
 if __name__ == "__main__":
     main()

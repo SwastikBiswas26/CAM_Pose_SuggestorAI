@@ -76,12 +76,20 @@ if 'captured_image_info' not in st.session_state:
 if 'processed_state_key' not in st.session_state:
     st.session_state.processed_state_key = None
 
-def generate_silhouette_preview(landmarks_template):
+def generate_silhouette_preview(landmarks_template, transparent=False):
     """
-    Creates a black canvas with the target pose skeleton drawn on it to show in the UI.
+    Creates a canvas with the target pose skeleton drawn on it.
+    If transparent=True, returns an RGBA image with a transparent background.
     """
-    canvas = np.zeros((300, 300, 3), dtype=np.uint8)
+    if transparent:
+        # Match typical webcam resolution aspect ratio (e.g., 480x640)
+        canvas = np.zeros((480, 640, 4), dtype=np.uint8)
+    else:
+        canvas = np.zeros((300, 300, 3), dtype=np.uint8)
+        
     if not landmarks_template:
+        if transparent:
+            return canvas
         # Draw a question mark or simple box if no landmarks
         cv2.putText(canvas, "?", (135, 170), cv2.FONT_HERSHEY_SIMPLEX, 4, (100, 100, 100), 4)
         return canvas
@@ -93,20 +101,37 @@ def generate_silhouette_preview(landmarks_template):
     
     for lm in landmarks_template:
         idx = lm["id"]
-        # Scale to 300x300 canvas
+        # Scale to canvas size
         pts[idx] = (int(lm["x"] * w), int(lm["y"] * h))
+
+    # Define colors (with transparency support)
+    if transparent:
+        line_color = (0, 255, 204, 255) # Green / Aqua
+        point_color = (255, 255, 255, 255) # White
+    else:
+        line_color = (0, 255, 204)
+        point_color = (255, 255, 255)
 
     # Draw lines
     for conn in POSE_CONNECTIONS:
         s, e = conn
         if s in pts and e in pts:
-            cv2.line(canvas, pts[s], pts[e], (0, 255, 204), 2, lineType=cv2.LINE_AA)
+            cv2.line(canvas, pts[s], pts[e], line_color, 4 if transparent else 2, lineType=cv2.LINE_AA)
             
     # Draw points
     for idx, pt in pts.items():
-        cv2.circle(canvas, pt, 3, (255, 255, 255), -1, lineType=cv2.LINE_AA)
+        cv2.circle(canvas, pt, 6 if transparent else 3, point_color, -1, lineType=cv2.LINE_AA)
         
     return canvas
+
+def get_image_base64(img_array):
+    """
+    Converts a numpy image array to a base64 encoded PNG Data URI.
+    """
+    _, buffer = cv2.imencode('.png', img_array)
+    b64 = base64.b64encode(buffer).decode('utf-8')
+    return f"data:image/png;base64,{b64}"
+
 
 # Main Web App UI
 def main():
@@ -154,7 +179,44 @@ def main():
             
             input_file = None
             if input_method == "📷 Use Browser Camera":
-                input_file = st.camera_input("Strike your pose!")
+                input_file = st.camera_input("Strike your pose!", key="pose_camera")
+                if input_file is None:
+                    # Generate base64 transparent skeleton guide
+                    overlay_canvas = generate_silhouette_preview(pose_data.get("landmarks", []), transparent=True)
+                    overlay_b64 = get_image_base64(overlay_canvas)
+                    
+                    st.markdown(f"""
+                        <style>
+                        /* Target the parent container of st.camera_input */
+                        div[data-testid="stCameraInput"] {{
+                            position: relative !important;
+                        }}
+                        
+                        /* Create overlay over camera video/feed wrapper */
+                        .camera-overlay {{
+                            position: absolute;
+                            top: 0;
+                            left: 0;
+                            width: 100%;
+                            height: 100%;
+                            z-index: 999;
+                            pointer-events: none;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                        }}
+                        
+                        .camera-overlay img {{
+                            width: 100%;
+                            height: 100%;
+                            object-fit: contain;
+                            opacity: 0.65;
+                        }}
+                        </style>
+                        <div class="camera-overlay">
+                            <img src="{overlay_b64}" />
+                        </div>
+                    """, unsafe_allow_html=True)
             else:
                 input_file = st.file_uploader("Upload an image containing the pose", type=["png", "jpg", "jpeg"])
                 

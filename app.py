@@ -6,6 +6,7 @@ import time
 import glob
 import io
 import hashlib
+import json
 from PIL import Image
 from pose_engine import PoseDetector, get_pose_angles, get_feedback, POSES_LIBRARY, get_all_poses
 
@@ -127,7 +128,7 @@ def main():
     # Render guide skeleton preview in Sidebar
     st.sidebar.markdown("### **Skeleton Guide Outline**")
     preview_img = generate_silhouette_preview(pose_data.get("landmarks", []))
-    st.sidebar.image(preview_img, channels="BGR", use_container_width=True)
+    st.sidebar.image(preview_img, channels="BGR", width="stretch")
     
     st.sidebar.markdown("---")
     st.sidebar.info("💡 Tip: Stand far enough so your full body (head to ankles) is visible in the camera frame.")
@@ -238,9 +239,9 @@ def main():
                 # Layout for raw/analyzed photos
                 pic_tab1, pic_tab2 = st.tabs(["✨ Final Photo (Clean)", "📊 AI Skeleton Analysis"])
                 with pic_tab1:
-                    st.image(info["raw_image"], use_container_width=True, caption=f"Captured Pose: {info['pose_name']}")
+                    st.image(info["raw_image"], width="stretch", caption=f"Captured Pose: {info['pose_name']}")
                 with pic_tab2:
-                    st.image(info["analysed_image"], use_container_width=True, caption="Overlay Skeleton Tracking")
+                    st.image(info["analysed_image"], width="stretch", caption="Overlay Skeleton Tracking")
                 
                 # Match stats
                 st.markdown(f"#### Alignment Accuracy: **{info['score']}%**")
@@ -273,7 +274,7 @@ def main():
                                 file_name=f"pose_clean_{info['timestamp']}.png",
                                 mime="image/png",
                                 key=f"dl_latest_raw_{info['timestamp']}",
-                                use_container_width=True
+                                width="stretch"
                             )
                     except Exception:
                         st.error("Error loading clean photo for download.")
@@ -286,7 +287,7 @@ def main():
                                 file_name=f"pose_tracked_{info['timestamp']}.png",
                                 mime="image/png",
                                 key=f"dl_latest_analysed_{info['timestamp']}",
-                                use_container_width=True
+                                width="stretch"
                             )
                     except Exception:
                         st.error("Error loading analyzed photo for download.")
@@ -314,7 +315,7 @@ def main():
                     formatted_time = "Unknown date"
                     
                 with col:
-                    st.image(photo_path, use_container_width=True, caption=f"Captured: {formatted_time}")
+                    st.image(photo_path, width="stretch", caption=f"Captured: {formatted_time}")
                     analysed_path = photo_path.replace("raw_", "analysed_")
                     
                     # Buttons container side-by-side
@@ -328,13 +329,13 @@ def main():
                                     file_name=f"captured_pose_{timestamp_str}.png",
                                     mime="image/png",
                                     key=f"dl_gallery_{timestamp_str}",
-                                    use_container_width=True
+                                    width="stretch"
                                 )
                         except Exception:
                             st.error("Error")
                             
                     with btn_col2:
-                        if st.button("🗑️ Delete", key=f"del_gallery_{timestamp_str}", use_container_width=True):
+                        if st.button("🗑️ Delete", key=f"del_gallery_{timestamp_str}", width="stretch"):
                             try:
                                 # Remove files
                                 if os.path.exists(photo_path):
@@ -356,8 +357,8 @@ def main():
                                 
                     # Option to view tracked overlay image
                     if os.path.exists(analysed_path):
-                        if st.button("View AI Skeleton Overlay", key=f"overlay_{timestamp_str}", use_container_width=True):
-                            st.image(analysed_path, use_container_width=True, caption="Joint Tracking Overlay")
+                        if st.button("View AI Skeleton Overlay", key=f"overlay_{timestamp_str}", width="stretch"):
+                            st.image(analysed_path, width="stretch", caption="Joint Tracking Overlay")
 
     with tab_create:
         st.markdown('<div class="card">', unsafe_allow_html=True)
@@ -397,12 +398,12 @@ def main():
                         img_preview = img_bgr.copy()
                         detector.find_landmarks(img_preview, draw=True, draw_connections=True, color=(0, 255, 204))
                         
-                        st.image(img_preview, channels="BGR", use_container_width=True, caption="Detected Pose Skeleton")
+                        st.image(img_preview, channels="BGR", width="stretch", caption="Detected Pose Skeleton")
                         
                         if not pose_name_input.strip():
                             st.warning("Please enter a name for this custom pose before saving.")
                         else:
-                            if st.button("💾 Save Custom Pose to Library", type="primary", use_container_width=True):
+                            if st.button("💾 Save Custom Pose to Library", type="primary", width="stretch"):
                                 # Extract angles and landmarks
                                 angles = get_pose_angles(lm_list)
                                 landmarks_data = []
